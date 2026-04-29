@@ -1,0 +1,21 @@
+[project]
+name = "btt-cli"
+version = "0.1.0"
+description = "Backup Tool for Telegram"
+authors = [
+    {name = "oguzokdotdev",email = "git@oguzok.tech"}
+]
+license = {text = "MIT License"}
+readme = "README.md"
+requires-python = "^3.11"
+dependencies = [
+    "hydrogram (>=0.2.0,<0.3.0)",
+    "sqlalchemy (>=2.0.49,<3.0.0)",
+    "aiosqlite (>=0.22.1,<0.23.0)",
+    "typer (>=0.25.0,<0.26.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

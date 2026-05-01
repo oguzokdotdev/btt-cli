@@ -13,6 +13,7 @@ sqlalchemy = "^2.0.49"
 aiosqlite = "^0.22.1"
 typer = "^0.25.0"
 platformdirs = "^4.9.6"
+tgcrypto = "^1.2.5"
 
 [tool.poetry.scripts]
 btt = "btt.__main__:app"

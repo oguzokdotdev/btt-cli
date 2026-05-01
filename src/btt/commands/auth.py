@@ -11,7 +11,7 @@ app = typer.Typer(help="Hydrogram Authorization")
 CONFIG_DIR = user_config_path("btt", "oguzok")
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-SESSION_FILE = CONFIG_DIR / "btt.session"
+SESSION_FILE = CONFIG_DIR / "btt"
 
 @app.callback(invoke_without_command=True)
 def auth_main(ctx: typer.Context):

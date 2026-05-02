@@ -17,7 +17,7 @@ DATABASE_URL = f"sqlite+aiosqlite:///{CONFIG_DIR / 'index.db'}"
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    connect_args={"timeout": 10}  # Таймаут соединения для SQLite
+    connect_args={"timeout": 10}
 )
 AsyncSessionLocal = async_sessionmaker(
     engine,
@@ -36,6 +36,10 @@ async def init_db():
         logger.error(f"Failed to initialize database: {e}")
         raise
 
+def is_db_initialized() -> bool:
+    """Checks if the database file exists."""
+    db_path = CONFIG_DIR / "index.db"
+    return db_path.exists()
 
 class DatabaseManager:
     """Manager for executing CRUD operations with files in the index."""
@@ -54,7 +58,6 @@ class DatabaseManager:
         """
         try:
             async with AsyncSessionLocal() as session:
-                # Проверяем существование файла
                 stmt = select(File).where(File.filepath == filepath)
                 result = await session.execute(stmt)
                 existing_file = result.scalar_one_or_none()
@@ -63,7 +66,6 @@ class DatabaseManager:
                     logger.debug(f"File already exists in index: {filepath}")
                     return False
 
-                # Добавляем новый файл
                 new_file = File(filepath=filepath, file_hash=file_hash, status=FileStatus.PENDING.value)
                 session.add(new_file)
                 await session.commit()
@@ -179,7 +181,6 @@ class DatabaseManager:
         """
         try:
             async with AsyncSessionLocal() as session:
-                # Проверяем существование файла (с блокировкой для транзакции)
                 check_stmt = select(File).where(File.id == file_id)
                 result = await session.execute(check_stmt)
                 existing_file = result.scalar_one_or_none()
@@ -188,12 +189,10 @@ class DatabaseManager:
                     logger.warning(f"File {file_id} not found for status update")
                     return False
 
-                # Подготавливаем данные для обновления
                 values_to_update = {"status": status.value}
                 if message_id is not None:
                     values_to_update["message_id"] = message_id
 
-                # Выполняем обновление
                 stmt = update(File).where(File.id == file_id).values(**values_to_update)
                 result = await session.execute(stmt)
                 await session.commit()
@@ -328,12 +327,10 @@ class DatabaseManager:
         """
         try:
             async with AsyncSessionLocal() as session:
-                # Общее количество
                 total_stmt = select(func.count(File.id))
                 total_result = await session.execute(total_stmt)
                 total = total_result.scalar() or 0
 
-                # По статусам
                 stats = {
                     "total": total,
                 }

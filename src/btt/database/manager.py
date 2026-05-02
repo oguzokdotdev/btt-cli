@@ -310,6 +310,37 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error while deleting file {file_id}: {e}")
             return False
+    
+    @staticmethod
+    async def delete_by_filepath(filepath: str) -> bool:
+        """
+        Deletes a single file from the index by its filepath.
+        
+        Args:
+            filepath: Absolute path to the file
+            
+        Returns:
+            True if deleted successfully, False if not found or on error
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                stmt = delete(File).where(File.filepath == filepath)
+                result = await session.execute(stmt)
+                await session.commit()
+
+                if result.rowcount == 0:
+                    logger.debug(f"File {filepath} not found for deletion")
+                    return False
+
+                logger.info(f"File {filepath} deleted from index")
+                return True
+
+        except SQLAlchemyError as e:
+            logger.error(f"Database error while deleting file {filepath}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error while deleting file {filepath}: {e}")
+            return False
 
     @staticmethod
     async def get_statistics() -> dict[str, int]:
@@ -375,3 +406,5 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error while checking file existence: {e}")
             return False
+        
+        

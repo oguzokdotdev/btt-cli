@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -36,10 +35,12 @@ async def init_db():
         logger.error(f"Failed to initialize database: {e}")
         raise
 
+
 def is_db_initialized() -> bool:
     """Checks if the database file exists."""
     db_path = CONFIG_DIR / "index.db"
     return db_path.exists()
+
 
 class DatabaseManager:
     """Manager for executing CRUD operations with files in the index."""
@@ -48,13 +49,9 @@ class DatabaseManager:
     async def add_file(filepath: str, file_hash: str) -> bool:
         """
         Adds a file to the queue.
-        
-        Args:
-            filepath: Absolute path to the file
-            file_hash: SHA256 hash of the file
-            
+
         Returns:
-            True if added, False if a file with this path already exists or on error
+            True if added, False if already exists or on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -66,7 +63,11 @@ class DatabaseManager:
                     logger.debug(f"File already exists in index: {filepath}")
                     return False
 
-                new_file = File(filepath=filepath, file_hash=file_hash, status=FileStatus.PENDING.value)
+                new_file = File(
+                    filepath=filepath,
+                    file_hash=file_hash,
+                    status=FileStatus.PENDING.value
+                )
                 session.add(new_file)
                 await session.commit()
                 logger.info(f"File added to index: {filepath}")
@@ -85,14 +86,10 @@ class DatabaseManager:
     @staticmethod
     async def get_files_by_status(status: FileStatus) -> list[File]:
         """
-        Returns a list of files with a specific status (e.g., PENDING).
-        Files are ordered by ID for consistent processing.
-        
-        Args:
-            status: FileStatus enum value
-            
+        Returns a list of files with a specific status, ordered by ID.
+
         Returns:
-            List of File objects, empty list if none found or on error
+            List of File objects, empty list on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -116,10 +113,10 @@ class DatabaseManager:
     @staticmethod
     async def get_all_files() -> list[File]:
         """
-        Returns all files in the database (for the status command).
-        
+        Returns all files in the database.
+
         Returns:
-            List of all File objects, empty list if none found or on error
+            List of all File objects, empty list on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -140,12 +137,9 @@ class DatabaseManager:
     async def get_file_by_id(file_id: int) -> Optional[File]:
         """
         Retrieves a single file by ID.
-        
-        Args:
-            file_id: The file ID
-            
+
         Returns:
-            File object if found, None otherwise
+            File object if found, None otherwise.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -165,19 +159,13 @@ class DatabaseManager:
     async def update_status(
         file_id: int,
         status: FileStatus,
-        message_id: Optional[int] = None
+        message_id: Optional[int] = None,
     ) -> bool:
         """
-        Updates the file status. If the file is successfully uploaded,
-        it also records its Telegram message_id.
-        
-        Args:
-            file_id: The file ID to update
-            status: New FileStatus
-            message_id: Optional Telegram message ID (for SUCCESS status)
-            
+        Updates the file status. Optionally records Telegram message_id on SUCCESS.
+
         Returns:
-            True if updated successfully, False if file not found or on error
+            True if updated successfully, False if not found or on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -221,14 +209,9 @@ class DatabaseManager:
     ) -> int:
         """
         Efficiently updates status for multiple files in one operation.
-        Useful for batch processing (e.g., marking 1000 files as SUCCESS).
-        
-        Args:
-            file_ids: List of file IDs to update
-            status: New FileStatus for all files
-            
+
         Returns:
-            Number of files actually updated
+            Number of files actually updated.
         """
         if not file_ids:
             logger.warning("bulk_update_status called with empty file_ids list")
@@ -256,12 +239,46 @@ class DatabaseManager:
             return 0
 
     @staticmethod
+    async def recover_stuck_uploads() -> int:
+        """
+        Rollbacks files stuck in UPLOADING status back to PENDING.
+        Must be called at the start of every upload session (Stage 0: Recovery).
+
+        Returns:
+            Number of recovered files.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                stmt = (
+                    update(File)
+                    .where(File.status == FileStatus.UPLOADING.value)
+                    .values(status=FileStatus.PENDING.value)
+                )
+                result = await session.execute(stmt)
+                await session.commit()
+
+                recovered_count = result.rowcount
+                if recovered_count > 0:
+                    logger.info(f"Recovered {recovered_count} stuck uploads back to PENDING")
+                else:
+                    logger.debug("No stuck uploads found to recover")
+
+                return recovered_count
+
+        except SQLAlchemyError as e:
+            logger.error(f"Database error while recovering stuck uploads: {e}")
+            return 0
+        except Exception as e:
+            logger.error(f"Unexpected error while recovering stuck uploads: {e}")
+            return 0
+
+    @staticmethod
     async def clear_successful_files() -> int:
         """
-        Deletes all files with the SUCCESS status from the index.
-        
+        Deletes all files with SUCCESS status from the index.
+
         Returns:
-            The number of deleted records
+            Number of deleted records.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -284,12 +301,9 @@ class DatabaseManager:
     async def delete_file(file_id: int) -> bool:
         """
         Deletes a single file from the index by ID.
-        
-        Args:
-            file_id: The file ID to delete
-            
+
         Returns:
-            True if deleted successfully, False if not found or on error
+            True if deleted, False if not found or on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -310,17 +324,14 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error while deleting file {file_id}: {e}")
             return False
-    
+
     @staticmethod
     async def delete_by_filepath(filepath: str) -> bool:
         """
         Deletes a single file from the index by its filepath.
-        
-        Args:
-            filepath: Absolute path to the file
-            
+
         Returns:
-            True if deleted successfully, False if not found or on error
+            True if deleted, False if not found or on error.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -346,15 +357,9 @@ class DatabaseManager:
     async def get_statistics() -> dict[str, int]:
         """
         Returns statistics about files in the database.
-        
+
         Returns:
-            Dictionary with counts: {
-                'total': int,
-                'pending': int,
-                'uploading': int,
-                'success': int,
-                'failed': int
-            }
+            Dictionary with counts per status plus total.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -362,12 +367,12 @@ class DatabaseManager:
                 total_result = await session.execute(total_stmt)
                 total = total_result.scalar() or 0
 
-                stats = {
-                    "total": total,
-                }
+                stats: dict[str, int] = {"total": total}
 
                 for status in FileStatus:
-                    count_stmt = select(func.count(File.id)).where(File.status == status.value)
+                    count_stmt = select(func.count(File.id)).where(
+                        File.status == status.value
+                    )
                     count_result = await session.execute(count_stmt)
                     count = count_result.scalar() or 0
                     stats[status.name.lower()] = count
@@ -386,12 +391,9 @@ class DatabaseManager:
     async def file_exists(filepath: str) -> bool:
         """
         Checks if a file already exists in the index.
-        
-        Args:
-            filepath: Path to check
-            
+
         Returns:
-            True if file exists, False otherwise
+            True if exists, False otherwise.
         """
         try:
             async with AsyncSessionLocal() as session:
@@ -406,5 +408,4 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error while checking file existence: {e}")
             return False
-        
-        
+

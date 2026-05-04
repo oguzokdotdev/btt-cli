@@ -11,8 +11,8 @@ from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, Ta
 
 from hydrogram import Client
 
-from btt.commands.config import load_config
-from btt.core.uploader import TelegramUploader
+from btt.commands.config import load_config, get_nested
+from btt.core.uploader import TelegramUploader, GROUP_SIZE
 from btt.database.manager import DatabaseManager as db
 from btt.database.models import FileStatus
 
@@ -34,9 +34,9 @@ def upload(
     mode: str = typer.Option(
         "backup", "--mode", "-m", help="'backup' — upload only. 'cleanup' — upload then delete from disk."
     ),
-    strict: bool = typer.Option(False, "--strict", help="Abort entire session on first failed file."),
+    strict: bool = typer.Option(False, "--strict", "-s", help="Abort entire session on first failed file."),
     no_signature: bool = typer.Option(
-        False, "--no-signature", help="Skip the summary message sent to Telegram after upload."
+        False, "--no-signature", "-ns", help="Skip the summary message sent to Telegram after upload."
     ),
 ):
     """Upload pending files from the index to Telegram."""
@@ -48,12 +48,15 @@ def upload(
 async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_signature: bool):
     # -- Config ------------------------------------------------------------------
     config = load_config()
-    if not config or not config.get("api_id") or not config.get("api_hash"):
+    api_id = get_nested(config, "api.id")
+    api_hash = get_nested(config, "api.hash")
+
+    if not config or not api_id or not api_hash:
         console.print("[red]Missing configuration. Run 'btt config set' first.[/red]")
         raise typer.Exit(code=1)
 
     if chat_id is None:
-        chat_id = config.get("chat_id")
+        chat_id = get_nested(config, "chat.id")
     if not chat_id:
         console.print("[red]No chat_id provided. Pass --chat-id or set it via 'btt config set'.[/red]")
         raise typer.Exit(code=1)
@@ -72,10 +75,13 @@ async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_sign
     cleanup = mode == "cleanup"
     mode_label = "[red bold]CLEANUP[/red bold]" if cleanup else "[green bold]BACKUP[/green bold]"
 
+    # Разбиваем на чанки по GROUP_SIZE
+    chunks = [files[i:i + GROUP_SIZE] for i in range(0, len(files), GROUP_SIZE)]
+
     async with Client(
         str(SESSION_FILE),
-        api_id=config["api_id"],
-        api_hash=config["api_hash"],
+        api_id=api_id,
+        api_hash=api_hash,
     ) as tg_client:
         uploader = TelegramUploader(tg_client)
         chat_title = await uploader.get_chat_title(chat_id)
@@ -84,7 +90,7 @@ async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_sign
             f"\n[bold]{len(files)} file(s)[/bold] will be uploaded to "
             f"[bold cyan]'{chat_title}'[/bold cyan]  •  Mode: {mode_label}"
         )
-        console.print("[dim]Run 'btt status --list' to review the queue.[/dim]\n")
+        console.print(f"[dim]{len(chunks)} group(s) of up to {GROUP_SIZE} files each.[/dim]\n")
 
         if not typer.confirm("Proceed?", default=False):
             return
@@ -104,42 +110,56 @@ async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_sign
         ) as progress:
             overall_task = progress.add_task(f"[0/{len(files)}] Uploading...", total=len(files))
 
-            for file_data in files:
-                filename = os.path.basename(file_data.filepath)
-                file_size = (
-                    os.path.getsize(file_data.filepath)
-                    if os.path.exists(file_data.filepath)
-                    else 0
+            def _on_flood_wait(seconds: int) -> None:
+                progress.console.print(
+                    f"[yellow]⏳  Flood limit hit. Pausing for {seconds}s...[/yellow]"
                 )
-                file_task: TaskID = progress.add_task(filename, total=max(file_size, 1))
 
-                async def _progress_cb(current: int, total: int, ftask: TaskID) -> None:
-                    progress.update(ftask, completed=current)
+            for chunk in chunks:
+                chunk_pairs = [(f.id, f.filepath) for f in chunk]
 
-                def _on_flood_wait(seconds: int) -> None:
-                    progress.console.print(
-                        f"[yellow]⏳  Flood limit hit. Pausing for {seconds}s...[/yellow]"
+                # Прогресс-таск для текущего активного файла в группе
+                first_filepath = chunk[0].filepath
+                first_size = os.path.getsize(first_filepath) if os.path.exists(first_filepath) else 1
+                file_task: TaskID = progress.add_task(
+                    os.path.basename(first_filepath),
+                    total=max(first_size, 1),
+                )
+
+                def _on_file_progress(filepath: str, current: int, total: int) -> None:
+                    progress.update(
+                        file_task,
+                        completed=current,
+                        total=max(total, 1),
+                        description=os.path.basename(filepath),
                     )
 
-                success = await uploader.upload_file(
-                    file_id=file_data.id,
-                    filepath=file_data.filepath,
+                succeeded_ids, failed_ids = await uploader.upload_group(
+                    files=chunk_pairs,
                     chat_id=chat_id,
-                    progress=_progress_cb,
-                    progress_args=(file_task,),
                     remove_after=cleanup,
                     on_flood_wait=_on_flood_wait,
+                    on_file_progress=_on_file_progress,
                 )
 
                 progress.remove_task(file_task)
 
-                if success:
-                    successful += 1
-                    total_bytes += file_size
-                    progress.console.print(f"  [green]✓[/green] {filename}")
-                else:
-                    failed += 1
-                    progress.console.print(f"  [red]✗[/red] {filename}")
+                # Считаем байты успешно загруженных
+                for f in chunk:
+                    if f.id in succeeded_ids:
+                        if os.path.exists(f.filepath):
+                            total_bytes += os.path.getsize(f.filepath)
+
+                successful += len(succeeded_ids)
+                failed += len(failed_ids)
+
+                # Логируем результат группы
+                if succeeded_ids:
+                    names = ", ".join(os.path.basename(f.filepath) for f in chunk if f.id in succeeded_ids)
+                    progress.console.print(f"  [green]✓[/green] {names}")
+                if failed_ids:
+                    names = ", ".join(os.path.basename(f.filepath) for f in chunk if f.id in failed_ids)
+                    progress.console.print(f"  [red]✗[/red] {names}")
                     if strict:
                         progress.console.print(
                             "[red]Strict mode enabled — stopping on first error.[/red]"
@@ -148,7 +168,7 @@ async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_sign
 
                 progress.update(
                     overall_task,
-                    advance=1,
+                    advance=len(chunk),
                     description=f"[{successful + failed}/{len(files)}] Uploading...",
                 )
 
@@ -172,4 +192,3 @@ async def _upload_logic(chat_id: Optional[int], mode: str, strict: bool, no_sign
                 await tg_client.send_message(chat_id, summary)
             except Exception as e:
                 logger.warning(f"Could not send summary message: {e}")
-

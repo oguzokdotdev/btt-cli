@@ -24,25 +24,12 @@ class TelegramUploader:
 
     async def upload_group(
         self,
-        files: list[tuple[int, str]],  # [(file_id, filepath), ...]
+        files: list[tuple[int, str]],
         chat_id: int,
         remove_after: bool = False,
         on_flood_wait: Optional[Callable[[int], None]] = None,
         on_file_progress: Optional[Callable[[str, int, int], None]] = None,
     ) -> tuple[list[int], list[int]]:
-        """
-        Uploads a group of up to 10 files as a media group.
-
-        Args:
-            files: List of (db_id, filepath) tuples.
-            chat_id: Target Telegram chat ID.
-            remove_after: Delete files from disk after successful upload.
-            on_flood_wait: Called with wait_seconds on FloodWait.
-            on_file_progress: Called with (filepath, current_bytes, total_bytes).
-
-        Returns:
-            (succeeded_ids, failed_ids) — lists of DB file IDs.
-        """
         valid = [(fid, fp) for fid, fp in files if os.path.exists(fp)]
         missing = [(fid, fp) for fid, fp in files if not os.path.exists(fp)]
 
@@ -58,26 +45,20 @@ class TelegramUploader:
 
         await db.bulk_update_status(file_ids, FileStatus.UPLOADING)
 
-        # Если один файл — send_document с прогрессом
         if len(valid) == 1:
             fid, fp = valid[0]
             return await self._upload_single(fid, fp, chat_id, remove_after, on_flood_wait, on_file_progress)
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                # Прогресс только для первого файла в группе (Telegram API ограничение)
                 first_fp = filepaths[0]
 
                 async def _progress(current: int, total: int) -> None:
                     if on_file_progress:
                         on_file_progress(first_fp, current, total)
 
-                media = [InputMediaDocument(media=filepaths[0])]
-                for fp in filepaths[1:]:
-                    media.append(InputMediaDocument(media=fp))
+                media = [InputMediaDocument(media=fp) for fp in filepaths]
 
-                # Первый файл с прогрессом отдельно не получится в media_group,
-                # поэтому трекаем размер вручную перед отправкой
                 messages = await self.client.send_media_group(
                     chat_id=chat_id,
                     media=media,
@@ -107,6 +88,16 @@ class TelegramUploader:
                 continue
 
             except Exception as e:
+                if "MEDIA_INVALID" in str(e) or "MEDIA_EMPTY" in str(e):
+                    logger.warning(f"MEDIA_INVALID in group, falling back to single upload")
+                    succeeded = []
+                    failed_single = []
+                    for fid, fp in valid:
+                        s, f = await self._upload_single(fid, fp, chat_id, remove_after, on_flood_wait, on_file_progress)
+                        succeeded.extend(s)
+                        failed_single.extend(f)
+                    return succeeded, failed_single + [fid for fid, _ in missing]
+
                 logger.error(f"Group upload error (attempt {attempt}/{MAX_RETRIES}): {e}")
                 if attempt == MAX_RETRIES:
                     await db.bulk_update_status(file_ids, FileStatus.FAILED)
@@ -125,7 +116,6 @@ class TelegramUploader:
         on_flood_wait: Optional[Callable[[int], None]] = None,
         on_file_progress: Optional[Callable[[str, int, int], None]] = None,
     ) -> tuple[list[int], list[int]]:
-        """Single-file upload with byte-level progress."""
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -165,7 +155,6 @@ class TelegramUploader:
         return [], [file_id]
 
     async def get_chat_title(self, chat_id: int) -> str:
-        """Fetches the display name of the target chat for pre-flight confirmation."""
         try:
             chat = await self.client.get_chat(chat_id)
             return chat.title or chat.first_name or str(chat_id)

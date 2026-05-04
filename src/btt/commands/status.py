@@ -9,7 +9,7 @@ from hydrogram import Client
 
 from btt.database.manager import DatabaseManager as db, is_db_initialized
 from btt.database.models import FileStatus
-from btt.commands.config import load_config
+from btt.commands.config import load_config, get_nested
 
 app = typer.Typer(help="Show backup status and statistics")
 console = Console()
@@ -73,9 +73,9 @@ def status_command(
         raise typer.Exit(code=1)
 
     config = load_config()
-    chat_id = config.get("chat.id") or config.get("chat_id")
-    api_id = config.get("api.id") or config.get("api_id")
-    api_hash = config.get("api.hash") or config.get("api_hash")
+    chat_id = get_nested(config, "chat.id")
+    api_id = get_nested(config, "api.id")
+    api_hash = get_nested(config, "api.hash")
 
     session_file = CONFIG_DIR / "btt.session"
     is_authorized = session_file.exists()
@@ -97,7 +97,7 @@ def status_command(
         auth_text = "[bold red]Not Authorized (Run 'btt auth')[/bold red]"
 
     if chat_id:
-        chat_display = f"[magenta]{chat_title} ({chat_id})[/magenta]" if chat_title else f"[magenta]{chat_id}[/magenta]"
+        chat_display = f"[magenta]{chat_title}[/magenta] [white]({chat_id})[/white]" if chat_title else f"[magenta]{chat_id}[/magenta]"
     else:
         chat_display = "[yellow]Not set[/yellow]"
 
